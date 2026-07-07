@@ -19,7 +19,7 @@ import argparse
 
 # OpenMM components
 from openmm import XmlSerializer
-from openmm import Vec3
+from openmm import Vec3, CustomNonbondedForce
 from openmm.app import PDBFile
 from openmm.app import ForceField, Modeller
 from openmm.app import PME, HBonds, NoCutoff
@@ -28,10 +28,6 @@ from openmm.app import PME, HBonds, NoCutoff
 from openff.toolkit.topology import Molecule
 
 from openmm.unit import angstrom, nanometer, amu, molar
-
-# OpenFF and OpenMM components for ligand force field parameters
-from openff.toolkit.topology import Molecule
-
 
 def boundingBoxSizes(positions):
     xmin = positions[0][0]
@@ -84,6 +80,34 @@ def assign_chain_ids(topology):
         else:
             print(f"Chain {chain.index} already has ID: '{chain.id}'")
 
+
+def add_zbl_force(system): 
+    #adds short-range repulsive potential
+    # Constants
+    # Z1, Z2: Atomic numbers
+    # d_cut: Cutoff distance (0.5 Angstrom)
+    d_cut = 0.5 * angstrom
+    r_cut = d_cut.value_in_unit(nanometer)
+    # ZBL screening function approximation (Standard 4-term polynomial)
+    # Note: You can use the analytical ZBL phi(x) formula inside the string
+    a_screen = 0.2 * angstrom
+    r_screen = a_screen.value_in_unit(nanometer)
+    zbl_phi = f"(0.1818*exp(-3.2*r/{r_screen}) + 0.5099*exp(-0.9423*r/{r_screen}) + 0.2802*exp(-0.4028*r/{r_screen}) + 0.02817*exp(-0.2016*r/{r_screen}))"
+    # Switching function: S(r) = (1 - (r/r_cut)^n)^m
+    # A cubic or quintic spline is standard to ensure force continuity
+    switching_func = f"(1 - (r/{r_cut})^2)^3" 
+    # Full expression: ZBL * S(r) * step(r_cut - r)
+    Z = 3
+    expression = f"step({r_cut}-r) * (({zbl_phi} * ({Z}*{Z}*14.4 / r)) * {switching_func})"
+    zbl_force = CustomNonbondedForce(expression)
+    zbl_force.setNonbondedMethod(CustomNonbondedForce.CutoffPeriodic)
+    zbl_force.setCutoffDistance(6.0 * angstrom)
+    zbl_force.setName("ZBLForce")
+    for i in range(system.getNumParticles()):
+        # Get the atomic number for this particle
+        zbl_force.addParticle([])
+    system.addForce(zbl_force)
+
 # Example Usage:
 # from openmm.app import PDBFile
 # pdb = PDBFile('input.pdb')
@@ -101,7 +125,8 @@ def make_system(
         cofsdffile=None,
         proteinforcefield=['amber14-all.xml'],
         solventforcefield=['amber14/tip3p.xml'],
-        ligandforcefield='openff-2.0.0',
+        ligandforcefield='openff-2.3.0',
+        mlpotential=None,
         ffcachefile=None,
         implsolv=None,
         hmass=1.0,
@@ -373,27 +398,43 @@ def make_system(
     else:
         print('Unknown ligand force field %s' % ligandforcefield)
         sys.exit(1)
-
     # Register the SMIRNOFF template generator
     # NOTE: forcefield object was initialized (above)
     # for the protein + water (subsystem) force field 
     # This step adds support for the ligand force field
     forcefield.registerTemplateGenerator(template_gen.generator)
 
+    system = None
     if implsolv is None:
         print("Ionic strength = ", ionicstrength*molar)
         print("Adding solvent and processing system ...")
         modeller.addSolvent(forcefield, boxVectors = (xBoxvec,yBoxvec,zBoxvec ), ionicStrength = ionicstrength*molar)
         print("Number of atoms in solvated system:", modeller.topology.getNumAtoms())
-        system=forcefield.createSystem(modeller.topology, nonbondedMethod = PME, nonbondedCutoff = 0.9*nanometer,
-                                    constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
+        if mlpotential:
+            from openmmml import MLPotential
+            potential = MLPotential(mlpotential)
+            system = potential.createSystem(modeller.topology, precision="single")
+            add_zbl_force(system)
+            #list the forces
+            print("Forces in ML system:")
+            VARIABLE_FORCE_GROUP = 31
+            for i in range(system.getNumForces()):
+                print(system.getForce(i).getName())
+                if system.getForce(i).getName() not in ["CMMotionRemover"]:
+                    print(f"Placing force {system.getForce(i).getName()} into VARIABLE_FORCE_GROUP ({VARIABLE_FORCE_GROUP})")
+                    system.getForce(i).setForceGroup(VARIABLE_FORCE_GROUP)
+        else:
+            system=forcefield.createSystem(modeller.topology, nonbondedMethod = PME, nonbondedCutoff = 0.9*nanometer,
+                                           constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
     else:
-        print("Solvent model: %s" % implsolv)
-        print("Number of atoms in implicit solvent system:", modeller.topology.getNumAtoms())
-        print("Processing system ...")
-        system=forcefield.createSystem(modeller.topology, nonbondedMethod = NoCutoff,
-                                    constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
-
+        if mlpotential is None:
+            print("Solvent model: %s" % implsolv)
+            print("Number of atoms in implicit solvent system:", modeller.topology.getNumAtoms())
+            print("Processing system ...")
+            system=forcefield.createSystem(modeller.topology, nonbondedMethod = NoCutoff,
+                                           constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
+    assert system is not None
+            
     with open(xmloutfile, 'w') as output:
         output.write(XmlSerializer.serialize(system))
 
@@ -450,7 +491,7 @@ def main():
     parser.add_argument('--solventForceField', required=False, action="append", dest='solventforcefield',
                         help='Force field for solvent/ions: default amber14/tip3p.xml ', default=['amber14/tip3p.xml'])
     parser.add_argument('--ligandForceField', required=False, type=str, dest='ligandforcefield',
-                        default='openff-2.0.0',
+                        default='openff-2.3.0',
                         help='Force field for ligand:  openff-2.0.0 (default), gaff, or espaloma-0.3.2')
     parser.add_argument('--implicitSolvent', required=False, type=str, dest='implsolv',
                         default=None,
@@ -467,6 +508,9 @@ def main():
     parser.add_argument('--padding', required=False, type=float, dest='padding',
                         default=1.0,
                         help='Solvent padding in nm')
+    parser.add_argument('--MLpotential', required=False, type=str, dest='mlpotential',
+                        default=1.0,
+                        help='Name of ML potential, such as "aceff-2.0"')
     # Arguments that are flags
     parser.add_argument('--verbose', required=False, action='store_true', dest='flagverbose',
                         help='Get more output with this flag')

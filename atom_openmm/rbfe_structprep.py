@@ -55,10 +55,6 @@ class OMMSystemRBFEnoATM(OMMSystemRBFE):
                     self.logger.info("Assigning Force %s to atmforcegroup" % self.system.getForce(i).getName())
                     self.system.getForce(i).setForceGroup(self.atmforcegroup)
                     
-        self.logger.info("System's Forces:")
-        for i in range(self.system.getNumForces()):
-            self.logger.info("   %s" % self.system.getForce(i).getName())
-                    
     def create_system(self):
         self.load_system()
         self.atm_utils = AtomUtils(self.system)
@@ -85,16 +81,27 @@ class OMMSystemRBFEnoATM(OMMSystemRBFE):
 
         self.set_torsion_metaDbias(self.temperature)
 
-        #do not include ATM Force, instead place the nonbonded
-        #forces in what it would be the the ATMForce group
-        #for the integrator
-        self.atmforcegroup = self.free_force_group()
-        self.populate_atmforcegroup()
+        if self.keywords.get("INTEGRATOR", "atmmts") == "atmmts":
+            #do not include ATM Force, instead place the nonbonded
+            #forces in what it would be the the ATMForce group
+            #for the multiple time step integrator
+            self.atmforcegroup = self.free_force_group()
+            self.populate_atmforcegroup()
+
+        self.logger.info("System's Forces:")
+        for i in range(self.system.getNumForces()):
+            self.logger.info("   %s" % self.system.getForce(i).getName())
 
         #add barostat
         pressure=1*bar
         self.set_barostat(self.temperature,pressure,25)
 
+        self.frictionCoeff = self.keywords.get("FRICTION_COEFF", "0.5") / picosecond
+        self.MDstepsize = self.keywords.get("TIME_STEP", "0.001") * picosecond
+
+        #DEBUG
+        print("RBFEstructprep:", " MDstepsize =", self.MDstepsize)
+        
         self.set_integrator(self.temperature, self.frictionCoeff, self.MDstepsize)
 
 def do_mintherm(keywords, logger):
@@ -118,27 +125,25 @@ def do_mintherm(keywords, logger):
     print ("Using platform %s" % simulation.context.getPlatform().getName())
         
     print("Potential energy before minimization =", simulation.context.getState(getEnergy = True).getPotentialEnergy())
-    print("Energy minimizing the system ...")
-    simulation.minimizeEnergy()
-    print("Potential energy after minimization =", simulation.context.getState(getEnergy = True).getPotentialEnergy())
 
-    #saves minimization checkpoint
-    simulation.saveState(jobname + '_min.xml')
-    #saves a pdb file
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    if syst.boxvectors is not None:
-        boxsize = simulation.context.getState().getPeriodicBoxVectors()
-        simulation.topology.setPeriodicBoxVectors(boxsize)
-    with open(jobname + '_min.pdb', 'w') as output:
-        PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
+    if not Path(jobname + "_min.xml").exists():
+        print("Energy minimizing the system ...")
+        simulation.minimizeEnergy()
+        print("Potential energy after minimization =", simulation.context.getState(getEnergy = True).getPotentialEnergy())
+        #saves minimization checkpoint
+        simulation.saveState(jobname + '_min.xml')
+        #saves a pdb file
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        if syst.boxvectors is not None:
+            boxsize = simulation.context.getState().getPeriodicBoxVectors()
+            simulation.topology.setPeriodicBoxVectors(boxsize)
+            with open(jobname + '_min.pdb', 'w') as output:
+                PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
 
-    print("Thermalization ...")
- 
     totalSteps = int(keywords.get("THERMALIZATION_STEPS", 150000))
     steps_per_cycle = int(keywords.get("STEPS_PER_CYCLE", 5000))
     number_of_cycles = int(totalSteps/steps_per_cycle)
     simulation.reporters.append(StateDataReporter(stdout, steps_per_cycle, step=True, potentialEnergy = True, temperature=True, volume=True, speed=True))
-
     # initial temperature
     initial_temp = keywords.get("INITIAL_TEMPERATURE")
     if initial_temp == None:
@@ -154,56 +159,60 @@ def do_mintherm(keywords, logger):
     #MD with temperature ramp
     temperature = initial_temperature
     syst.integrator.setTemperature(temperature)
-    for i in range(number_of_cycles):
-        simulation.step(steps_per_cycle)
-        #prepare system for new temperature
-        temperature = temperature + delta_temperature
-        syst.integrator.setTemperature(temperature)
-
-    #saves thermalized checkpoint
-    simulation.saveState(jobname + '_therm.xml')
-    #saves a pdb file
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    if syst.boxvectors is not None:
-        boxsize = simulation.context.getState().getPeriodicBoxVectors()
-        simulation.topology.setPeriodicBoxVectors(boxsize)
-    with open(jobname + '_therm.pdb', 'w') as output:
-        PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
-
-    if syst.boxvectors is not None:
-        print("NPT equilibration ...")
-    
-        syst.barostat.setFrequency(25)
-
+    if not Path(jobname + "_therm.xml").exists():
+        print("Thermalization ...")
         for i in range(number_of_cycles):
             simulation.step(steps_per_cycle)
+            #prepare system for new temperature
+            temperature = temperature + delta_temperature
+            syst.integrator.setTemperature(temperature)
 
-    #saves checkpoint
-    simulation.saveState(jobname + '_npt.xml')
-    #saves a pdb file
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    if syst.boxvectors is not None:
-        boxsize = simulation.context.getState().getPeriodicBoxVectors()
-        simulation.topology.setPeriodicBoxVectors(boxsize)
-    with open(jobname + '_npt.pdb', 'w') as output:
-        PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
+            #saves thermalized checkpoint
+            simulation.saveState(jobname + '_therm.xml')
+        #saves a pdb file
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        if syst.boxvectors is not None:
+            boxsize = simulation.context.getState().getPeriodicBoxVectors()
+            simulation.topology.setPeriodicBoxVectors(boxsize)
+        with open(jobname + '_therm.pdb', 'w') as output:
+            PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
 
-    print("NVT equilibration ...")
+    syst.integrator.setTemperature(syst.temperature)
+    
+    if not keywords.get("STRUCTPREP_SKIP_NPT", False):
+        if syst.boxvectors is not None:
+            if not Path(jobname + "_npt.xml").exists():
+                print("NPT equilibration ...")
+                syst.barostat.setFrequency(25)
+                for i in range(number_of_cycles):
+                    simulation.step(steps_per_cycle)
+                #saves checkpoint
+                simulation.saveState(jobname + '_npt.xml')
+                #saves a pdb file
+                positions = simulation.context.getState(getPositions=True).getPositions()
+                if syst.boxvectors is not None:
+                    boxsize = simulation.context.getState().getPeriodicBoxVectors()
+                    simulation.topology.setPeriodicBoxVectors(boxsize)
+                with open(jobname + '_npt.pdb', 'w') as output:
+                    PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
+
     syst.barostat.setFrequency(0)#disabled
+    syst.integrator.setTemperature(syst.temperature)
 
-    #MD at constant volume
-    for i in range(number_of_cycles):
-        simulation.step(steps_per_cycle)
-
-    #saves checkpoint
-    simulation.saveState(jobname + '_equil.xml')
-    #saves a pdb file
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    if syst.boxvectors is not None:
-        boxsize = simulation.context.getState().getPeriodicBoxVectors()
-        simulation.topology.setPeriodicBoxVectors(boxsize)
-    with open(jobname + '_equil.pdb', 'w') as output:
-        PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
+    if not Path(jobname + "_equil.xml").exists():
+        #MD at constant volume
+        print("NVT equilibration ...")
+        for i in range(number_of_cycles):
+            simulation.step(steps_per_cycle)
+        #saves checkpoint
+        simulation.saveState(jobname + '_equil.xml')
+        #saves a pdb file
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        if syst.boxvectors is not None:
+            boxsize = simulation.context.getState().getPeriodicBoxVectors()
+            simulation.topology.setPeriodicBoxVectors(boxsize)
+        with open(jobname + '_equil.pdb', 'w') as output:
+            PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
 
 def do_lambda_annealing(keywords, logger):
     basename = keywords.get('BASENAME')

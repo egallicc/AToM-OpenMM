@@ -60,9 +60,11 @@ class OMMSystem(object):
         if keywords.get('VARIABLE_FORCE_GROUP') is not None:
             self.var_force_group = int(keywords.get('VARIABLE_FORCE_GROUP'))
 
-        self.frictionCoeff = float(self.keywords.get('FRICTION_COEFF')) / picosecond
-        self.MDstepsize = float(self.keywords.get('TIME_STEP')) * picosecond
-
+        self.frictionCoeff = float(keywords.get('FRICTION_COEFF')) / picosecond
+        self.MDstepsize = float(keywords.get('TIME_STEP', 0.001)) * picosecond
+        #DEBUG
+        print("OMMSystem:", " MDstepsize =", self.MDstepsize)
+       
         self.doMetaD = False
 
         self.do_excl_pot = False
@@ -156,20 +158,6 @@ class OMMSystem(object):
                 self._exit("Error: EXCLUSION_POT_MOL2_INDEXES is required when EXCLUSION_POT_MOL1_INDEXES is set.")
             sigma = float(self.keywords.get('EXCLUSION_POT_SIGMA', 6.0)) * angstrom
             epsi = float(self.keywords.get('EXCLUSION_POT_EPSILON', 1.0)) * kilocalorie_per_mole
-            # find the system's main nonbonded force to retrieve the cutoff distance, etc.
-            cutoff = 0.0*angstrom
-            switch_cutoff = 0.0*angstrom
-            nonbonded_force = None
-            for f in self.system.getForces():
-                if isinstance(f, NonbondedForce):
-                    nonbonded_force = f
-                    break
-            assert nonbonded_force is not None, "Unable to locate the system's NonBondedForce"
-            nbmethod = nonbonded_force.getNonbondedMethod()
-            if not nbmethod == f.NoCutoff:
-                cutoff = nonbonded_force.getCutoffDistance()
-                switch_cutoff = cutoff - 2.0*angstrom
-                assert (cutoff > 0.0*angstrom and switch_cutoff > 0.0*angstrom)
             nexponent = int(self.keywords.get('EXCLUSION_POT_EXPONENT', 6))
             assert nexponent > 0, "EXCLUSION_POT_EXPONENT must be a positive integer"
             assert nexponent%2 == 0, "EXCLUSION_POT_EXPONENT must be an even number"
@@ -186,18 +174,39 @@ class OMMSystem(object):
             force.setName("ExclusionForce")
             force.addGlobalParameter("epsilonexcl", epsi)
             force.addGlobalParameter("sigmaexcl", sigma)
-            if nbmethod in (nonbonded_force.CutoffPeriodic,nonbonded_force.Ewald,nonbonded_force.PME,nonbonded_force.LJPME):
+
+            # find the system's main nonbonded force to retrieve the cutoff distance, etc.
+            cutoff = 6.0*angstrom
+            switch_cutoff = cutoff - 2.0*angstrom
+            nonbonded_force = None
+            for f in self.system.getForces():
+                if isinstance(f, NonbondedForce):
+                    nonbonded_force = f
+                    break
+            if nonbonded_force is not None:
+                nbmethod = nonbonded_force.getNonbondedMethod()
+                if not nbmethod == f.NoCutoff:
+                    cutoff = nonbonded_force.getCutoffDistance()
+                    switch_cutoff = cutoff - 2.0*angstrom
+                if nbmethod in (nonbonded_force.CutoffPeriodic,nonbonded_force.Ewald,nonbonded_force.PME,nonbonded_force.LJPME):
+                    force.setNonbondedMethod(f.CutoffPeriodic)
+                    force.setCutoffDistance(cutoff)
+                    force.setUseSwitchingFunction(True)
+                    force.setSwitchingDistance(switch_cutoff)
+                elif nbmethod in (CutoffNonPeriodic):
+                    force.setNonbondedMethod(nbmethod)
+                    force.setCutoffDistance(cutoff)
+                    force.setUseSwitchingFunction(True)
+                    force.setSwitchingDistance(switch_cutoff)
+                else:
+                    force.setNonbondedMethod(nbmethod)
+            else:
+                #TO-DO check for absence of PBCs
                 force.setNonbondedMethod(f.CutoffPeriodic)
                 force.setCutoffDistance(cutoff)
                 force.setUseSwitchingFunction(True)
                 force.setSwitchingDistance(switch_cutoff)
-            elif nbmethod in (CutoffNonPeriodic):
-                force.setNonbondedMethod(nbmethod)
-                force.setCutoffDistance(cutoff)
-                force.setUseSwitchingFunction(True)
-                force.setSwitchingDistance(switch_cutoff)
-            else:
-                force.setNonbondedMethod(nbmethod)
+
             for atom in self.topology.atoms():
                 force.addParticle([])
             force.addInteractionGroup(mol1_indexes, mol2_indexes)
@@ -361,7 +370,7 @@ class OMMSystem(object):
                 temperature, frictionCoeff, MDstepsize
             )
 
-            self.integrator.setIntegrationForceGroups({0, self.atmforcegroup})
+            #self.integrator.setIntegrationForceGroups({0, self.atmforcegroup})
 
             self.logger.info(f"Temperature: {self.integrator.getTemperature()}")
             self.logger.info(f"Friction: {self.integrator.getFriction()}")
