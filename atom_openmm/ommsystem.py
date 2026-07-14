@@ -96,6 +96,12 @@ class OMMSystem(object):
         sys.stdout.flush()
         sys.exit(1)
 
+    def _keyword_is_true(self, key, default=False):
+        value = self.keywords.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+
     def load_system(self):
         """
         load the topology from a pdb file and the system from an xml file
@@ -559,6 +565,11 @@ class OMMSystemABFE(OMMSystem):
             "y = (u-Ubcore)/(Umax-Ubcore);" + \
 	    "u = select(step(Direction), 1, -1)*(u1-(u0 + UOffset))"
         self.atmforce = ATMForce(referencePotExpression + alchemicalPotExpression + softCoreExpression)
+        if self._keyword_is_true('ATMFORCE_INDEPENDENT_CONTEXTS', False):
+            if hasattr(self.atmforce, 'setUseIndependentInnerContexts'):
+                self.atmforce.setUseIndependentInnerContexts(True)
+            else:
+                self.logger.warning('ATMFORCE_INDEPENDENT_CONTEXTS requested, but ATMForce does not support setUseIndependentInnerContexts().')
         self.atmforce.addGlobalParameter("Lambda1", lambda1);
         self.atmforce.addGlobalParameter("Lambda2", lambda2);
         if self.multisoftplus:
@@ -1038,6 +1049,11 @@ class OMMSystemRBFE(OMMSystem):
             "y = (u-Ubcore)/(Umax-Ubcore);" + \
 	    "u = select(step(Direction), 1, -1)*(u1-(u0 + UOffset))"
         self.atmforce = ATMForce(referencePotExpression + alchemicalPotExpression + softCoreExpression)
+        if self._keyword_is_true('ATMFORCE_INDEPENDENT_CONTEXTS', False):
+            if hasattr(self.atmforce, 'setUseIndependentInnerContexts'):
+                self.atmforce.setUseIndependentInnerContexts(True)
+            else:
+                self.logger.warning('ATMFORCE_INDEPENDENT_CONTEXTS requested, but ATMForce does not support setUseIndependentInnerContexts().')
         self.atmforce.addGlobalParameter("Lambda1", lambda1);
         self.atmforce.addGlobalParameter("Lambda2", lambda2);
         if self.multisoftplus:
