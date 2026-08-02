@@ -261,7 +261,7 @@ def run_atm(options,
         if csv_datafileout_leg2:
             df2.to_csv(csv_datafileout_leg2, index=False)
         if figfileout:
-            fig = create_quality_assessment_plot(df1, df2)
+            fig = create_quality_assessment_plot(df1, df2, uwham_data['data_all'])
             fig.savefig(figfileout)
 
 if __name__ == '__main__':

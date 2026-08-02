@@ -7,6 +7,7 @@ import numpy as np
 from scipy.optimize import minimize
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 def _insert(x, d, x0=0):
     """Insert a value x0 at d-th position of x"""
@@ -466,8 +467,47 @@ def get_lnp0u_lambdaf_leg(dataf, h = None, n_grid = 100):
     
     return u_grid, np.log(p), dlnp_du
 
-def create_quality_assessment_plot(df1, df2):
-    fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+def create_replica_diffusion_plot(data, ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    else:
+        fig = ax.figure
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    default_colors = prop_cycle.by_key()['color']
+    nc = len(default_colors)
+
+    ax.set_title("Replica state diffusion")
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("State ID")
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+
+    for i, replicaid in enumerate(sorted(data["replicaid"].unique())):
+        replica_data = data[data["replicaid"] == replicaid]
+        ax.plot(
+            replica_data["timeid"],
+            replica_data["stateid"],
+            color=default_colors[i % nc],
+            lw=1.5,
+            label=f"r{replicaid}",
+        )
+
+    ax.set_xlim(data["timeid"].min(), data["timeid"].max())
+    ax.set_ylim(data["stateid"].min() - 0.5, data["stateid"].max() + 0.5)
+    ax.legend(ncol=2, fontsize=8)
+    return fig
+
+def create_quality_assessment_plot(df1, df2, data=None):
+    if data is None:
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+        diffusion_ax = None
+    else:
+        fig = plt.figure(figsize=(10, 12))
+        gs = fig.add_gridspec(3, 2)
+        axs = np.array([
+            [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])],
+            [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])],
+        ])
+        diffusion_ax = fig.add_subplot(gs[2, :])
     prop_cycle = plt.rcParams['axes.prop_cycle']
     default_colors = prop_cycle.by_key()['color']
     nc = len(default_colors)
@@ -532,6 +572,12 @@ def create_quality_assessment_plot(df1, df2):
             par[lvar] = vpar[lvar][i]
         axs[1, 1].plot(u_grid_leg2, _dbias_fcn(u_grid_leg2, par), color=default_colors[i % nc])
 
+    if data is None:
+        fig.tight_layout()
+        return fig
+
+    create_replica_diffusion_plot(data, ax=diffusion_ax)
+    fig.tight_layout()
     return fig
         
 def calculate_uwham_from_rundir(
@@ -598,12 +644,14 @@ def calculate_uwham_from_rundir(
     for i, file in enumerate(datafiles):
         # Read data file
         df = pd.read_csv(file, sep=r"\s+", header=None, names=columns, index_col=False)
+        df["replicaid"] = i
         # Add timeid column
         df["timeid"] = np.arange(1, len(df) + 1)
         dfs.append(df)
 
     # Combine all dataframes
     data = pd.concat(dfs, ignore_index=True)
+    full_data = data.copy()
 
     #extract alchemical schedule
     schedule = get_alchemical_schedule(data)
@@ -638,6 +686,7 @@ def calculate_uwham_from_rundir(
     # Calculate samples
     nsamples = len(data[timemask])
     samplesperreplica = nsamples // nstates
+    timemask_data = data[timemask].copy()
 
     # Filter data for leg1
     data1 = data[timemask & (data["stateid"] <= leg1istate)].copy()
@@ -660,6 +709,8 @@ def calculate_uwham_from_rundir(
         'dg_leg2': dg2,
         'dg_stderr_leg2': ddg2,
         'nsamples': samplesperreplica,
+        'data_all': full_data,
+        'data': timemask_data,
         'df_leg1': data1,
         'uwham_out_leg1': uwham_out1,
         'df_leg2': data2,
@@ -726,7 +777,7 @@ def main():
 
     #produces a plot for simulation quality assessment
     if args['plotOutFile']:
-        fig = create_quality_assessment_plot(df1, df2)
+        fig = create_quality_assessment_plot(df1, df2, uwham_data['data_all'])
         fig.savefig(args['plotOutFile'])
 
     dg1 = uwham_data['dg_leg1']
