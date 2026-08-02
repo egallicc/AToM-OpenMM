@@ -127,6 +127,8 @@ def make_system(
         solventforcefield=['amber14/tip3p.xml'],
         ligandforcefield='openff-2.3.0',
         mlpotential=None,
+        mlpotentialfile=None,
+        mlzbl=False,
         ffcachefile=None,
         implsolv=None,
         hmass=1.0,
@@ -410,30 +412,41 @@ def make_system(
         print("Adding solvent and processing system ...")
         modeller.addSolvent(forcefield, boxVectors = (xBoxvec,yBoxvec,zBoxvec ), ionicStrength = ionicstrength*molar)
         print("Number of atoms in solvated system:", modeller.topology.getNumAtoms())
-        if mlpotential:
-            from openmmml import MLPotential
+    else:
+         print("Solvent model: %s" % implsolv)
+         print("Number of atoms in implicit solvent system:", modeller.topology.getNumAtoms())
+    if mlpotential is not None:
+        print(f"Processing system with ML potential {mlpotential}...")
+        from openmmml import MLPotential
+        if mlpotentialfile is None:
             potential = MLPotential(mlpotential)
-            system = potential.createSystem(modeller.topology, precision="single")
-            add_zbl_force(system)
-            #list the forces
-            print("Forces in ML system:")
-            VARIABLE_FORCE_GROUP = 31
-            for i in range(system.getNumForces()):
-                print(system.getForce(i).getName())
-                if system.getForce(i).getName() not in ["CMMotionRemover"]:
-                    print(f"Placing force {system.getForce(i).getName()} into VARIABLE_FORCE_GROUP ({VARIABLE_FORCE_GROUP})")
-                    system.getForce(i).setForceGroup(VARIABLE_FORCE_GROUP)
         else:
+            potential = MLPotential(mlpotential, modelPath=mlpotentialfile)
+        system = potential.createSystem(modeller.topology, precision="single")
+        if mlzbl:
+            print("adding ZBL repulsive potential ...")
+            add_zbl_force(system)
+        #list the forces
+        print("Forces in ML system:")
+        VARIABLE_FORCE_GROUP = 31
+        for i in range(system.getNumForces()):
+            print(system.getForce(i).getName())
+            if system.getForce(i).getName() not in ["CMMotionRemover"]:
+                print(f"Placing force {system.getForce(i).getName()} into VARIABLE_FORCE_GROUP ({VARIABLE_FORCE_GROUP})")
+                system.getForce(i).setForceGroup(VARIABLE_FORCE_GROUP)
+    else:
+        print("Processing system with force field ...")
+        if implsolv is None:
             system=forcefield.createSystem(modeller.topology, nonbondedMethod = PME, nonbondedCutoff = 0.9*nanometer,
                                            constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
-    else:
-        if mlpotential is None:
-            print("Solvent model: %s" % implsolv)
-            print("Number of atoms in implicit solvent system:", modeller.topology.getNumAtoms())
-            print("Processing system ...")
+        else:
             system=forcefield.createSystem(modeller.topology, nonbondedMethod = NoCutoff,
                                            constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
     assert system is not None
+
+    #DEBUG
+    print("System uses periodic boundary conditions:", system.usesPeriodicBoundaryConditions())
+    
             
     with open(xmloutfile, 'w') as output:
         output.write(XmlSerializer.serialize(system))
@@ -509,8 +522,12 @@ def main():
                         default=1.0,
                         help='Solvent padding in nm')
     parser.add_argument('--MLpotential', required=False, type=str, dest='mlpotential',
-                        default=1.0,
                         help='Name of ML potential, such as "aceff-2.0"')
+    parser.add_argument('--MLpotentialFile', required=False, type=str, dest='mlpotentialfile',
+                        help='Name of ML potential file, such as "fennix-bio1-small"')
+    parser.add_argument('--MLzbl', required=False, action='store_true', dest='mlzbl', 
+                        help='whether to add a repulsive zbl potential to the ML model')
+
     # Arguments that are flags
     parser.add_argument('--verbose', required=False, action='store_true', dest='flagverbose',
                         help='Get more output with this flag')

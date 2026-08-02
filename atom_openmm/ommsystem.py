@@ -62,8 +62,6 @@ class OMMSystem(object):
 
         self.frictionCoeff = float(keywords.get('FRICTION_COEFF')) / picosecond
         self.MDstepsize = float(keywords.get('TIME_STEP', 0.001)) * picosecond
-        #DEBUG
-        print("OMMSystem:", " MDstepsize =", self.MDstepsize)
        
         self.doMetaD = False
 
@@ -132,9 +130,10 @@ class OMMSystem(object):
         frequency : 0 - disable the barostat
 
         """
-        self.barostat = MonteCarloBarostat(pressure, temperature)
-        self.barostat.setFrequency(frequency)
-        self.system.addForce(self.barostat)
+        if self.system.usesPeriodicBoundaryConditions():
+            self.barostat = MonteCarloBarostat(pressure, temperature)
+            self.barostat.setFrequency(frequency)
+            self.system.addForce(self.barostat)
 
     def free_force_group(self):
         varset = set([self.var_force_group]) if self.var_force_group is not None else set()
@@ -182,33 +181,33 @@ class OMMSystem(object):
             force.addGlobalParameter("sigmaexcl", sigma)
 
             # find the system's main nonbonded force to retrieve the cutoff distance, etc.
-            cutoff = 6.0*angstrom
+            cutoff = float(self.keywords.get('EXCLUSION_POT_CUTOFF', 6.0)) * angstrom
             switch_cutoff = cutoff - 2.0*angstrom
-            nonbonded_force = None
-            for f in self.system.getForces():
-                if isinstance(f, NonbondedForce):
-                    nonbonded_force = f
-                    break
+            nonbonded_force = self.system_nbforce()
             if nonbonded_force is not None:
-                nbmethod = nonbonded_force.getNonbondedMethod()
-                if not nbmethod == f.NoCutoff:
+                #match the cutoff settings with those of the non-bonded force
+                if not nonbonded_force.getNonbondedMethod() == nonbonded_force.NoCutoff:
                     cutoff = nonbonded_force.getCutoffDistance()
                     switch_cutoff = cutoff - 2.0*angstrom
-                if nbmethod in (nonbonded_force.CutoffPeriodic,nonbonded_force.Ewald,nonbonded_force.PME,nonbonded_force.LJPME):
-                    force.setNonbondedMethod(f.CutoffPeriodic)
-                    force.setCutoffDistance(cutoff)
-                    force.setUseSwitchingFunction(True)
-                    force.setSwitchingDistance(switch_cutoff)
-                elif nbmethod in (CutoffNonPeriodic):
-                    force.setNonbondedMethod(nbmethod)
+                    if self.system.usesPeriodicBoundaryConditions():
+                        force.setNonbondedMethod(force.CutoffPeriodic)
+                        self.logger.info(f"Receptor/ligand exclusion potential using CutoffPeriodic with cutoff {cutoff}.")
+                    else:
+                        force.setNonbondedMethod(force.CutoffNonPeriodic)
+                        self.logger.info(f"Receptor/ligand exclusion potential using CutoffNonPeriodic with cutoff {cutoff}.")
                     force.setCutoffDistance(cutoff)
                     force.setUseSwitchingFunction(True)
                     force.setSwitchingDistance(switch_cutoff)
                 else:
-                    force.setNonbondedMethod(nbmethod)
+                    force.setNonbondedMethod(force.NoCutoff)
             else:
-                #TO-DO check for absence of PBCs
-                force.setNonbondedMethod(f.CutoffPeriodic)
+                #the system does not have a non bonded force, use default settings
+                if self.system.usesPeriodicBoundaryConditions():
+                    force.setNonbondedMethod(force.CutoffPeriodic)
+                    self.logger.info(f"Receptor/ligand exclusion potential using CutoffPeriodic with cutoff {cutoff}.")
+                else:
+                    force.setNonbondedMethod(force.CutoffNonPeriodic)
+                    self.logger.info(f"Receptor/ligand exclusion potential using CutoffNonPeriodic with cutoff {cutoff}.")
                 force.setCutoffDistance(cutoff)
                 force.setUseSwitchingFunction(True)
                 force.setSwitchingDistance(switch_cutoff)
@@ -394,6 +393,20 @@ class OMMSystem(object):
         else:
             self._exit(f"Invalid integrator: {integrator}")
 
+    def system_nbforce(self):
+        #find the System's NonbondedForce or the CustomNonbondedForce as a backup, or None
+        nonbonded_force = None
+        for f in self.system.getForces():
+            if isinstance(f, NonbondedForce):
+                nonbonded_force = f
+                break
+        if nonbonded_force is None:
+            for f in self.system.getForces():
+                if isinstance(f,  CustomNonbondedForce):
+                    nonbonded_force = f
+                    break
+        return nonbonded_force 
+            
 #Temperature RE
 class OMMSystemTRE(OMMSystem):
     def set_integrator(self, temperature, frictionCoeff, MDstepsize, defaultMDstepsize = 0.001*picosecond):
@@ -989,7 +1002,6 @@ class OMMSystemRBFE(OMMSystem):
                 if multi_var_regions:
                     for vl, rl2, rl1 in zip(lig1_var_atoms,lig2_ref_atoms,lig1_ref_atoms):
                         for i in range(len(vl)):
-                            print("LIG1:", vl[i], rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2])
                             self.atmforce.setParticleTransformation(vl[i], ParticleFrameDisplacement(rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2])) 
                 else:
                     for i in range(len(lig1_var_atoms)):
@@ -998,7 +1010,6 @@ class OMMSystemRBFE(OMMSystem):
                 if multi_var_regions:
                     for vl, rl1, rl2 in zip(lig2_var_atoms,lig1_ref_atoms,lig2_ref_atoms):
                         for i in range(len(vl)):
-                            print("LIG2:", vl[i], rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2])
                             self.atmforce.setParticleTransformation(vl[i], ParticleFrameDisplacement(rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2])) 
                 else:                
                     for i in range(len(lig2_var_atoms)):

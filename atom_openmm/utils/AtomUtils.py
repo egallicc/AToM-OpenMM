@@ -1300,7 +1300,7 @@ class AtomUtils(object):
             psiforce.addBond(groupids, np.array([kf, a0, b0], dtype=np.double) )
         return (thetaforce, phiforce, psiforce)
 
-    def addPosRestraints(self, particles, refpos, fc = 25.0 * kilocalorie_per_mole/angstrom**2, tol = 0.5 * angstrom, periodic = True):
+    def addPosRestraints(self, particles, refpos, fc = 25.0 * kilocalorie_per_mole/angstrom**2, tol = 0.5 * angstrom):
         """
         Applies flat-bottom, quadratic position restraints to a set of
         atoms based on a set of reference positions.
@@ -1326,6 +1326,7 @@ class AtomUtils(object):
 
         if not particles or len(particles) == 0:
             return None
+        periodic = self.system.usesPeriodicBoundaryConditions()
         if periodic:
             posrestforce = mm.CustomExternalForce("0.5*fc*select(step(dist-tol), (dist-tol)^2, 0); dist = periodicdistance(x,y,z,x0,y0,z0)")
         else:

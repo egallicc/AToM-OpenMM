@@ -69,7 +69,6 @@ class OMMSystemRBFEnoATM(OMMSystemRBFE):
         #indexes of the atoms whose position is restrained near the initial positions
         #by a flat-bottom harmonic potential.
         self.set_positional_restraints()
-        
         #target temperature
         temp = self.keywords.get("TEMPERATURES")
         if temp == None:
@@ -80,27 +79,23 @@ class OMMSystemRBFEnoATM(OMMSystemRBFE):
             self.temperature = float(temp) * kelvin
 
         self.set_torsion_metaDbias(self.temperature)
-
         if self.keywords.get("INTEGRATOR", "atmmts") == "atmmts":
             #do not include ATM Force, instead place the nonbonded
             #forces in what it would be the the ATMForce group
             #for the multiple time step integrator
             self.atmforcegroup = self.free_force_group()
             self.populate_atmforcegroup()
-
+            
         self.logger.info("System's Forces:")
         for i in range(self.system.getNumForces()):
             self.logger.info("   %s" % self.system.getForce(i).getName())
 
-        #add barostat
+        #add barostat (it checks for PBCs)
         pressure=1*bar
         self.set_barostat(self.temperature,pressure,25)
 
         self.frictionCoeff = self.keywords.get("FRICTION_COEFF", "0.5") / picosecond
         self.MDstepsize = self.keywords.get("TIME_STEP", "0.001") * picosecond
-
-        #DEBUG
-        print("RBFEstructprep:", " MDstepsize =", self.MDstepsize)
         
         self.set_integrator(self.temperature, self.frictionCoeff, self.MDstepsize)
 
@@ -154,7 +149,8 @@ def do_mintherm(keywords, logger):
     final_temperature = syst.temperature
     delta_temperature = (final_temperature - initial_temperature)/number_of_cycles
 
-    syst.barostat.setFrequency(0)#disabled
+    if syst.barostat is not None:
+        syst.barostat.setFrequency(0)#disabled
 
     #MD with temperature ramp
     temperature = initial_temperature
@@ -178,8 +174,8 @@ def do_mintherm(keywords, logger):
             PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
 
     syst.integrator.setTemperature(syst.temperature)
-    
-    if not keywords.get("STRUCTPREP_SKIP_NPT", False):
+
+    if syst.system.usesPeriodicBoundaryConditions() and not keywords.get("STRUCTPREP_SKIP_NPT", False):
         if syst.boxvectors is not None:
             if not Path(jobname + "_npt.xml").exists():
                 print("NPT equilibration ...")
@@ -195,8 +191,8 @@ def do_mintherm(keywords, logger):
                     simulation.topology.setPeriodicBoxVectors(boxsize)
                 with open(jobname + '_npt.pdb', 'w') as output:
                     PDBFile.writeFile(simulation.topology, positions, output, keepIds=True)
-
-    syst.barostat.setFrequency(0)#disabled
+    if syst.barostat is not None:
+        syst.barostat.setFrequency(0)#disabled
     syst.integrator.setTemperature(syst.temperature)
 
     if not Path(jobname + "_equil.xml").exists():
@@ -231,8 +227,9 @@ def do_lambda_annealing(keywords, logger):
         simulation.context.setPeriodicBoxVectors(syst.boxvectors[0], syst.boxvectors[1], syst.boxvectors[2])
 
     print ("Using platform %s" % simulation.context.getPlatform().getName())
-    
-    syst.barostat.setFrequency(0)#disabled
+
+    if syst.barostat is not None:
+        syst.barostat.setFrequency(0)#disabled
 
     #target temperature
     temp = keywords.get("TEMPERATURES")
@@ -282,7 +279,7 @@ def do_lambda_annealing(keywords, logger):
     print("Annealing to lambda = 1/2 ...")
 
     totalSteps = int(keywords.get("ANNEALING_STEPS", 250000))
-    steps_per_cycle = int(keywords.get("STEPS_PER_CYCLE", 5000))
+    steps_per_cycle = int(keywords.get("STEPS_PER_CYCLE", 1000)) #5000
     number_of_cycles = int(totalSteps/steps_per_cycle)
     deltalambda = (0.5 - 0.0)/float(number_of_cycles)
     simulation.reporters.append(StateDataReporter(stdout, steps_per_cycle, step=True, potentialEnergy = True, temperature=True, speed=True))
@@ -359,8 +356,9 @@ def do_equil(keywords, logger):
         simulation.context.setPeriodicBoxVectors(syst.boxvectors[0], syst.boxvectors[1], syst.boxvectors[2])
 
     print ("Using platform %s" % simulation.context.getPlatform().getName())
-    
-    syst.barostat.setFrequency(0)#disabled
+
+    if syst.barostat is not None:
+        syst.barostat.setFrequency(0)#disabled
 
     #target temperature
     temp = keywords.get("TEMPERATURES")
