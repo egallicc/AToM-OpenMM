@@ -126,8 +126,9 @@ def make_system(
         proteinforcefield=['amber14-all.xml'],
         solventforcefield=['amber14/tip3p.xml'],
         ligandforcefield='openff-2.3.0',
-        mlpotential=None,
-        mlpotentialfile=None,
+        qmpotential=None,
+        qmpotentialfile=None,
+        qmatomsquery=None,
         mlzbl=False,
         ffcachefile=None,
         implsolv=None,
@@ -415,26 +416,9 @@ def make_system(
     else:
          print("Solvent model: %s" % implsolv)
          print("Number of atoms in implicit solvent system:", modeller.topology.getNumAtoms())
-    if mlpotential is not None:
-        print(f"Processing system with ML potential {mlpotential}...")
-        from openmmml import MLPotential
-        if mlpotentialfile is None:
-            potential = MLPotential(mlpotential)
-        else:
-            potential = MLPotential(mlpotential, modelPath=mlpotentialfile)
-        system = potential.createSystem(modeller.topology, precision="single")
-        if mlzbl:
-            print("adding ZBL repulsive potential ...")
-            add_zbl_force(system)
-        #list the forces
-        print("Forces in ML system:")
-        VARIABLE_FORCE_GROUP = 31
-        for i in range(system.getNumForces()):
-            print(system.getForce(i).getName())
-            if system.getForce(i).getName() not in ["CMMotionRemover"]:
-                print(f"Placing force {system.getForce(i).getName()} into VARIABLE_FORCE_GROUP ({VARIABLE_FORCE_GROUP})")
-                system.getForce(i).setForceGroup(VARIABLE_FORCE_GROUP)
-    else:
+
+    system = None
+    if qmpotential is None or qmatomsquery is not None: #qmatoms = None implies a pure QM system that does not need a force field
         print("Processing system with force field ...")
         if implsolv is None:
             system=forcefield.createSystem(modeller.topology, nonbondedMethod = PME, nonbondedCutoff = 0.9*nanometer,
@@ -442,7 +426,52 @@ def make_system(
         else:
             system=forcefield.createSystem(modeller.topology, nonbondedMethod = NoCutoff,
                                            constraints=HBonds, rigidWater = True, removeCMMotion = False, hydrogenMass = hmass*amu)
-    assert system is not None
+        assert system is not None
+         
+    if qmpotential is not None:
+        if qmpotential == "pyscf":
+            from openmmpyscf import PySCFPotential
+            potential = PySCFPotential(
+                method="wb97x-d4",
+                basis="def2-TZVP",
+                charge=0,
+                multiplicity=1,
+                memory="2 GB",
+                num_threads=None,
+                quiet=True,
+            )
+            if qmatomsquery is None:
+                system = potential.createSystem(topology)
+            else:
+                #TODO: translate qmatomsquery to qmatoms
+                mixed_system = potential.createMixedSystem(
+                    modeller.topology,
+                    system,
+                    atoms=qmatoms,
+                    embedding="electronic",
+                    forceGroup=4
+                )
+        else:
+            assert qmatoms is None, "ML/MM mixed systems are not supported (TODO)"
+            from openmmml import MLPotential
+            print(f"Processing system with ML potential {qmpotential}...")
+            if mlpotentialfile is None:
+                potential = MLPotential(qmpotential)
+            else:
+                potential = MLPotential(qmpotential, modelPath=qmpotentialfile)
+            system = potential.createSystem(modeller.topology, precision="single")
+            if mlzbl:
+                print("adding ZBL repulsive potential ...")
+                add_zbl_force(system)
+        
+        #list the forces
+        print("Forces in ML/QM system:")
+        VARIABLE_FORCE_GROUP = 31
+        for i in range(system.getNumForces()):
+            print(system.getForce(i).getName())
+            if system.getForce(i).getName() not in ["CMMotionRemover"]:
+                print(f"Placing force {system.getForce(i).getName()} into VARIABLE_FORCE_GROUP ({VARIABLE_FORCE_GROUP})")
+                system.getForce(i).setForceGroup(VARIABLE_FORCE_GROUP)
 
     #DEBUG
     print("System uses periodic boundary conditions:", system.usesPeriodicBoundaryConditions())
@@ -521,9 +550,11 @@ def main():
     parser.add_argument('--padding', required=False, type=float, dest='padding',
                         default=1.0,
                         help='Solvent padding in nm')
-    parser.add_argument('--MLpotential', required=False, type=str, dest='mlpotential',
-                        help='Name of ML potential, such as "aceff-2.0"')
-    parser.add_argument('--MLpotentialFile', required=False, type=str, dest='mlpotentialfile',
+    parser.add_argument('--QMpotential', required=False, type=str, dest='qmpotential',
+                        help='Name of ML or QM potential, such as "aceff-2.0" or "pyscf"')
+    parser.add_argument('--QMatomsquery', required=False, type=str, dest='qmatomsquery',
+                        help='Query string for the QM atoms of a mixed system such as "chain == A"')
+    parser.add_argument('--QMpotentialFile', required=False, type=str, dest='qmpotentialfile',
                         help='Name of ML potential file, such as "fennix-bio1-small"')
     parser.add_argument('--MLzbl', required=False, action='store_true', dest='mlzbl', 
                         help='whether to add a repulsive zbl potential to the ML model')
