@@ -513,8 +513,6 @@ def get_selected_principal_groups(topology, positions, atom_indices, cutoff= 30.
     }
 
 def is_list(arg):
-    if not arg:
-        return False
     # Strings are sequences, but we usually treat them as scalars
     if isinstance(arg, str):
         return False
@@ -525,8 +523,6 @@ def is_list(arg):
         return False
 
 def is_list_of_lists(arg):
-    if not arg:
-        return False
     if not is_list(arg):
         return False
     # Check if the elements inside are also sequences (excluding strings)

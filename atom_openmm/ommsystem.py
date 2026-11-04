@@ -728,17 +728,16 @@ class OMMSystemRBFE(OMMSystem):
         if rcpt_atom_restr is None:
             rcpt_atom_restr = self.keywords.get('REST_LIGAND_CMREC_ATOMS')
 
-        cmrestraints_present = (rcpt_atom_restr is not None) and (lig1_atom_restr is not None) and (lig2_atom_restr is not None)
-
         rcpt_frame_cm = self.keywords.get('RCPT_FRAME_ATOMS_O')
         rcpt_frame_z  = self.keywords.get('RCPT_FRAME_ATOMS_Z')
         rcpt_frame_y  = self.keywords.get('RCPT_FRAME_ATOMS_Y')
         internal_frame_present = rcpt_frame_cm and rcpt_frame_z and rcpt_frame_y
-        self.logger.info("Using VSite restraints based on the internal receptor frame.")
+        if internal_frame_present:
+            self.logger.info("Using VSite restraints based on the internal receptor frame.")
 
         self.vsiterestraintForce1 = None
         self.vsiterestraintForce2 = None
-        if cmrestraints_present:
+        if rcpt_atom_restr is not None:
             cmkf = float(self.keywords.get('CM_KF'))
             kf = cmkf * kilocalorie_per_mole/angstrom**2 #force constant for Vsite CM-CM restraint
             cmtol = float(self.keywords.get('CM_TOL'))
@@ -746,43 +745,47 @@ class OMMSystemRBFE(OMMSystem):
 
             #Vsite restraints for ligand 1
             if internal_frame_present:
-                self.vsiterestraintForce1 = self.atm_utils.addVsiteRestraintForceCMCMInternal(
-                    lig_cm_particles = lig1_atom_restr,
-                    rcpt_cm_particles_origin = rcpt_frame_cm,
-                    rcpt_cm_particles_z = rcpt_frame_z,
-                    rcpt_cm_particles_yz = rcpt_frame_y,
-                    kfcm = kf,
-                    tolcm = r0,
-                    offset = self.lig1offset)
-                self.vsiterestraintForce1.setName("VsiteRestraintForceCMCMInternal")
-            else:
-                self.vsiterestraintForce1 = self.atm_utils.addVsiteRestraintForceCMCM(
-                    lig_cm_particles = lig1_atom_restr,
-                    rcpt_cm_particles = rcpt_atom_restr,
-                    kfcm = kf,
-                    tolcm = r0,
-                    offset = self.lig1offset)
-                self.vsiterestraintForce1.setName("VsiteRestraintForceCMCM")
-            #with the exclusion potential, the unbound ligand is not restrained
-            if not self.do_excl_pot:
-                if internal_frame_present:
-                    self.vsiterestraintForce2 = self.atm_utils.addVsiteRestraintForceCMCMInternal(
-                        lig_cm_particles = lig2_atom_restr,
+                if lig1_atom_restr:
+                    self.vsiterestraintForce1 = self.atm_utils.addVsiteRestraintForceCMCMInternal(
+                        lig_cm_particles = lig1_atom_restr,
                         rcpt_cm_particles_origin = rcpt_frame_cm,
                         rcpt_cm_particles_z = rcpt_frame_z,
                         rcpt_cm_particles_yz = rcpt_frame_y,
                         kfcm = kf,
                         tolcm = r0,
-                        offset = self.lig2offset)
-                    self.vsiterestraintForce2.setName("VsiteRestraintForceCMCMInternal")
-                else:
-                    self.vsiterestraintForce2 = self.atm_utils.addVsiteRestraintForceCMCM(
-                        lig_cm_particles = lig2_atom_restr,
+                        offset = self.lig1offset)
+                    self.vsiterestraintForce1.setName("VsiteRestraintForceCMCMInternal")
+            else:
+                if lig1_atom_restr:
+                    self.vsiterestraintForce1 = self.atm_utils.addVsiteRestraintForceCMCM(
+                        lig_cm_particles = lig1_atom_restr,
                         rcpt_cm_particles = rcpt_atom_restr,
                         kfcm = kf,
                         tolcm = r0,
-                        offset = self.lig2offset)
-                    self.vsiterestraintForce2.setName("VsiteRestraintForceCMCM")
+                        offset = self.lig1offset)
+                    self.vsiterestraintForce1.setName("VsiteRestraintForceCMCM")
+            #with the exclusion potential, the unbound ligand is not restrained
+            if not self.do_excl_pot:
+                if internal_frame_present:
+                    if lig2_atom_restr:
+                        self.vsiterestraintForce2 = self.atm_utils.addVsiteRestraintForceCMCMInternal(
+                            lig_cm_particles = lig2_atom_restr,
+                            rcpt_cm_particles_origin = rcpt_frame_cm,
+                            rcpt_cm_particles_z = rcpt_frame_z,
+                            rcpt_cm_particles_yz = rcpt_frame_y,
+                            kfcm = kf,
+                            tolcm = r0,
+                            offset = self.lig2offset)
+                        self.vsiterestraintForce2.setName("VsiteRestraintForceCMCMInternal")
+                else:
+                    if lig2_atom_restr:
+                        self.vsiterestraintForce2 = self.atm_utils.addVsiteRestraintForceCMCM(
+                            lig_cm_particles = lig2_atom_restr,
+                            rcpt_cm_particles = rcpt_atom_restr,
+                            kfcm = kf,
+                            tolcm = r0,
+                            offset = self.lig2offset)
+                        self.vsiterestraintForce2.setName("VsiteRestraintForceCMCM")
 
     def set_orientation_restraints(self):
         #orientational VSite restraints
@@ -920,7 +923,20 @@ class OMMSystemRBFE(OMMSystem):
 
         lig1_var_atoms = self.keywords.get('LIGAND1_VAR_ATOMS')
         lig2_var_atoms = self.keywords.get('LIGAND2_VAR_ATOMS')
-
+        assert lig1_var_atoms or lig2_var_atoms, "no VAR_ATOMS lists defined"
+        
+        #handle edge case of one var atom list is not defined
+        if lig1_var_atoms is not None and lig2_var_atoms is None:
+            if is_list_of_lists(lig1_var_atoms):
+                lig2_var_atoms = [[] for _ in lig1_var_atoms]
+            else:
+                lig2_var_atoms = []
+        if lig2_var_atoms is not None and lig1_var_atoms is None:
+            if is_list_of_lists(lig2_var_atoms):
+                lig1_var_atoms = [[] for _ in lig2_var_atoms]
+            else:
+                lig1_var_atoms = []
+                
         multi_var_regions = False
         multi_var_regions_count = 0
         if is_list_of_lists(lig1_var_atoms):
@@ -938,18 +954,19 @@ class OMMSystemRBFE(OMMSystem):
         lig1_common_atoms = self.keywords.get('LIGAND1_COMMON_ATOMS')
         lig2_common_atoms = self.keywords.get('LIGAND2_COMMON_ATOMS')
 
-        if multi_var_regions:
-            if not lig1_common_atoms:
-                all_var_atoms = [ i for l in lig1_var_atoms  for i in l]
-                lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in all_var_atoms ])
-            if not lig2_common_atoms:
-                all_var_atoms = [ i for l in lig2_var_atoms  for i in l]
-                lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
-        else:
-            if not lig1_common_atoms:
-                lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in lig1_var_atoms ])
-            if not lig2_common_atoms:
-                lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
+        if lig1_common_atoms and lig1_common_atoms:
+            if multi_var_regions:
+                if not lig1_common_atoms:
+                    all_var_atoms = [ i for l in lig1_var_atoms  for i in l]
+                    lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in all_var_atoms ])
+                if not lig2_common_atoms:
+                    all_var_atoms = [ i for l in lig2_var_atoms  for i in l]
+                    lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
+            else:
+                if not lig1_common_atoms:
+                    lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in lig1_var_atoms ])
+                if not lig2_common_atoms:
+                    lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
 
         if lig1_common_atoms and lig2_common_atoms:
             if not len(lig1_common_atoms) == len(lig2_common_atoms):
@@ -965,9 +982,9 @@ class OMMSystemRBFE(OMMSystem):
                 return
             if [lig1_attach_atom, lig2_attach_atom].count(None) == 1:
                 self._exit("Two attachment atoms are required.")
-            for i in range(len(lig1_common_atoms)):
-                self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
-            if lig2_common_atoms:
+            if lig1_common_atoms and lig2_common_atoms:
+                for i in range(len(lig1_common_atoms)):
+                    self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
                 for i in range(len(lig2_common_atoms)):
                     self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
             if lig1_var_atoms:
@@ -1007,9 +1024,9 @@ class OMMSystemRBFE(OMMSystem):
             else:
                 lig1_ref_atoms  = [ self.refatoms1[i]+self.lig1_atoms[0] for i in range(3)]
                 lig2_ref_atoms  = [ self.refatoms2[i]+self.lig2_atoms[0] for i in range(3)]
-            for i in range(len(lig1_common_atoms)):
-                self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
-            if lig2_common_atoms:
+            if lig1_common_atoms and lig2_common_atoms:
+                for i in range(len(lig1_common_atoms)):
+                    self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
                 for i in range(len(lig2_common_atoms)):
                     self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
             if lig1_var_atoms:

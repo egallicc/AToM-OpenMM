@@ -141,7 +141,7 @@ def do_mintherm(keywords, logger):
     simulation.reporters.append(StateDataReporter(stdout, steps_per_cycle, step=True, potentialEnergy = True, temperature=True, volume=True, speed=True))
     # initial temperature
     initial_temp = keywords.get("INITIAL_TEMPERATURE")
-    if initial_temp == None:
+    if initial_temp is None:
         initial_temperature = 50.0 * kelvin
     else:
         initial_temperature = float(initial_temp) * kelvin
@@ -157,6 +157,7 @@ def do_mintherm(keywords, logger):
     syst.integrator.setTemperature(temperature)
     if not Path(jobname + "_therm.xml").exists():
         print("Thermalization ...")
+        simulation.context.setVelocitiesToTemperature(initial_temperature)
         for i in range(number_of_cycles):
             simulation.step(steps_per_cycle)
             #prepare system for new temperature
