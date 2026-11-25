@@ -38,7 +38,7 @@ class OMMSystemRBFEnoATM(OMMSystemRBFE):
                 if self.system.getForce(i).getForceGroup() == self.var_force_group:
                     self.logger.info("Assigning Force %s to atmforcegroup" % self.system.getForce(i).getName())
                     self.system.getForce(i).setForceGroup(self.atmforcegroup)
-        elif self.keywords.get('LIGAND1_VAR_ATOMS') is not None:
+        elif self.keywords.get('LIGAND1_VAR_ATOMS') is not None or self.keywords.get('LIGAND2_VAR_ATOMS') is not None:
             #add all standard bonded and non-bonded forces to ATMForce
             for i in range(self.system.getNumForces()):
                 if ( nbpattern.match(self.system.getForce(i).getName())   or

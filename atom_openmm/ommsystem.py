@@ -15,7 +15,26 @@ from openmm import *
 from openmm.unit import *
 from datetime import datetime
 
-from atom_openmm.utils.AtomUtils import AtomUtils, separate14, is_list_of_lists
+from atom_openmm.utils.AtomUtils import AtomUtils, separate14, is_list, is_list_of_lists
+
+
+def _normalize_atom_lists(atom_spec, name):
+    """Normalize a single list of atom indexes or a list of lists of atom indexes
+    into a list of lists of ints, validating structure."""
+    assert atom_spec is not None, f"{name} must be specified"
+    assert is_list(atom_spec), f"{name} must be a list or list of lists of atom indexes"
+    if is_list_of_lists(atom_spec):
+        normalized = []
+        for sublist in atom_spec:
+            assert not any(is_list(x) for x in sublist), (
+                f"{name} cannot be nested deeper than a list of lists"
+            )
+            normalized.append([int(x) for x in sublist])
+        return normalized
+    assert not any(is_list(x) for x in atom_spec), (
+        f"{name} must not mix scalar atom indexes and sublists"
+    )
+    return [[int(x) for x in atom_spec]]
 
 # OpenMM's MTSLangevinIntegrator does not have a setTemperature method
 class ATMMTSLangevinIntegrator(MTSLangevinIntegrator):
@@ -832,15 +851,20 @@ class OMMSystemRBFE(OMMSystem):
         if refatoms1_cntl is None or refatoms2_cntl is None:
             return
 
-        if is_list_of_lists(refatoms1_cntl):
-            self.refatoms1 = refatoms1_cntl[0]
-        else:
-            self.refatoms1 = refatoms1_cntl
+        ref1_groups = _normalize_atom_lists(refatoms1_cntl, 'ALIGN_LIGAND1_REF_ATOMS')
+        ref2_groups = _normalize_atom_lists(refatoms2_cntl, 'ALIGN_LIGAND2_REF_ATOMS')
+        assert len(ref1_groups) == len(ref2_groups), (
+            f"ALIGN_LIGAND1_REF_ATOMS ({len(ref1_groups)}) and "
+            f"ALIGN_LIGAND2_REF_ATOMS ({len(ref2_groups)}) must contain the same number of lists"
+        )
+        for rl in ref1_groups:
+            assert len(rl) == 3, f"Each ALIGN_LIGAND1_REF_ATOMS list must contain 3 atoms, got {rl}"
+        for rl in ref2_groups:
+            assert len(rl) == 3, f"Each ALIGN_LIGAND2_REF_ATOMS list must contain 3 atoms, got {rl}"
+
+        self.refatoms1 = ref1_groups[0]
         lig1_ref_atoms  = [ self.refatoms1[i]+self.lig1_atoms[0] for i in range(3)]
-        if is_list_of_lists(refatoms2_cntl):
-            self.refatoms2 = refatoms2_cntl[0]
-        else:
-            self.refatoms2 = refatoms2_cntl
+        self.refatoms2 = ref2_groups[0]
         lig2_ref_atoms  = [ self.refatoms2[i]+self.lig2_atoms[0] for i in range(3)]
 
         #add alignment force
@@ -876,138 +900,121 @@ class OMMSystemRBFE(OMMSystem):
         for i in range(self.topology.getNumAtoms()):
             self.atmforce.addParticle( )
 
-        if self.keywords.get('LIGAND1_ATTACH_ATOM') is not None:
-            #particle-based variable displacements 
-            lig1_attach_atom = int(self.keywords.get('LIGAND1_ATTACH_ATOM'))
-            lig2_attach_atom = int(self.keywords.get('LIGAND2_ATTACH_ATOM'))
-            if [lig1_attach_atom, lig2_attach_atom].count(None) == 2:
-                return
-            if [lig1_attach_atom, lig2_attach_atom].count(None) == 1:
-                self._exit("Two attachment atoms are required.")
+        lig1_var_atoms_in = self.keywords.get('LIGAND1_VAR_ATOMS')
+        lig2_var_atoms_in = self.keywords.get('LIGAND2_VAR_ATOMS')
+        assert lig1_var_atoms_in is not None and lig2_var_atoms_in is not None, (
+            "Both LIGAND1_VAR_ATOMS and LIGAND2_VAR_ATOMS must be specified"
+        )
 
-        lig1_var_atoms = self.keywords.get('LIGAND1_VAR_ATOMS')
-        lig2_var_atoms = self.keywords.get('LIGAND2_VAR_ATOMS')
+        lig1_var_groups = _normalize_atom_lists(lig1_var_atoms_in, 'LIGAND1_VAR_ATOMS')
+        lig2_var_groups = _normalize_atom_lists(lig2_var_atoms_in, 'LIGAND2_VAR_ATOMS')
+        assert len(lig1_var_groups) == len(lig2_var_groups), (
+            f"The LIGAND1_VAR_ATOMS ({len(lig1_var_groups)}) and "
+            f"LIGAND2_VAR_ATOMS ({len(lig2_var_groups)}) lists must contain the same number of atom lists"
+        )
+        num_var_regions = len(lig1_var_groups)
 
-        multi_var_regions = False
-        multi_var_regions_count = 0
-        if is_list_of_lists(lig1_var_atoms):
-            multi_var_regions = True
-            assert is_list_of_lists(lig2_var_atoms), "Multiple VAR_ATOMS must apply to both ligands"
-            assert len(lig1_var_atoms) == len(lig2_var_atoms), "The VAR_ATOM lists must be of the same length"
-            multi_var_regions_count = len(lig1_var_atoms)
-            assert self.keywords.get('ALIGN_LIGAND1_REF_ATOMS'), "Multiple VAR regions require multiple REF atom sets"
-            assert self.keywords.get('ALIGN_LIGAND2_REF_ATOMS'), "Multiple VAR regions require multiple REF atom sets"
-            assert is_list_of_lists(self.keywords.get('ALIGN_LIGAND1_REF_ATOMS'))
-            assert is_list_of_lists(self.keywords.get('ALIGN_LIGAND2_REF_ATOMS'))
-            assert len(self.keywords.get('ALIGN_LIGAND1_REF_ATOMS')) == multi_var_regions_count
-            assert len(self.keywords.get('ALIGN_LIGAND2_REF_ATOMS')) == multi_var_regions_count
+        all_var_atoms_1 = [i for l in lig1_var_groups for i in l]
+        all_var_atoms_2 = [i for l in lig2_var_groups for i in l]
+        assert len(all_var_atoms_1) == len(set(all_var_atoms_1)), "Duplicate atom indexes in LIGAND1_VAR_ATOMS"
+        assert len(all_var_atoms_2) == len(set(all_var_atoms_2)), "Duplicate atom indexes in LIGAND2_VAR_ATOMS"
 
         lig1_common_atoms = self.keywords.get('LIGAND1_COMMON_ATOMS')
         lig2_common_atoms = self.keywords.get('LIGAND2_COMMON_ATOMS')
 
-        if multi_var_regions:
-            if not lig1_common_atoms:
-                all_var_atoms = [ i for l in lig1_var_atoms  for i in l]
-                lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in all_var_atoms ])
-            if not lig2_common_atoms:
-                all_var_atoms = [ i for l in lig2_var_atoms  for i in l]
-                lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
-        else:
-            if not lig1_common_atoms:
-                lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in lig1_var_atoms ])
-            if not lig2_common_atoms:
-                lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in lig2_var_atoms ])
+        if not lig1_common_atoms:
+            var1_set = set(all_var_atoms_1)
+            lig1_common_atoms = sorted([i for i in self.lig1_atoms if i not in var1_set])
+        if not lig2_common_atoms:
+            var2_set = set(all_var_atoms_2)
+            lig2_common_atoms = sorted([i for i in self.lig2_atoms if i not in var2_set])
 
-        if lig1_common_atoms and lig2_common_atoms:
-            if not len(lig1_common_atoms) == len(lig2_common_atoms):
-                msg = "Error: the number of common atoms of lig1 (%d) and lig2 (%d) differ" % (len(lig1_common_atoms),len(lig2_common_atoms))
-                self._exit(msg)
+        if len(lig1_common_atoms) != len(lig2_common_atoms):
+            msg = "Error: the number of common atoms of lig1 (%d) and lig2 (%d) differ" % (len(lig1_common_atoms),len(lig2_common_atoms))
+            self._exit(msg)
 
-        if self.keywords.get('LIGAND1_ATTACH_ATOM') is not None:
+        if self.keywords.get('LIGAND1_ATTACH_ATOM') is not None or self.keywords.get('LIGAND2_ATTACH_ATOM') is not None:
             #particle-based variable displacements
             self.logger.info("Using particle-based displacements.")
-            lig1_attach_atom = int(self.keywords.get('LIGAND1_ATTACH_ATOM'))
-            lig2_attach_atom = int(self.keywords.get('LIGAND2_ATTACH_ATOM'))
-            if [lig1_attach_atom, lig2_attach_atom].count(None) == 2:
-                return
-            if [lig1_attach_atom, lig2_attach_atom].count(None) == 1:
+            lig1_attach_in = self.keywords.get('LIGAND1_ATTACH_ATOM')
+            lig2_attach_in = self.keywords.get('LIGAND2_ATTACH_ATOM')
+            if [lig1_attach_in, lig2_attach_in].count(None) == 1:
                 self._exit("Two attachment atoms are required.")
+            lig1_attach_atoms = [int(x) for x in lig1_attach_in] if is_list(lig1_attach_in) else [int(lig1_attach_in)]
+            lig2_attach_atoms = [int(x) for x in lig2_attach_in] if is_list(lig2_attach_in) else [int(lig2_attach_in)]
+            assert len(lig1_attach_atoms) == num_var_regions and len(lig2_attach_atoms) == num_var_regions, (
+                f"The number of attachment atoms ({len(lig1_attach_atoms)}, {len(lig2_attach_atoms)}) "
+                f"must match the number of variable atom lists ({num_var_regions})"
+            )
             for i in range(len(lig1_common_atoms)):
                 self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
-            if lig2_common_atoms:
-                for i in range(len(lig2_common_atoms)):
-                    self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
-            if lig1_var_atoms:
-                for i in range(len(lig1_var_atoms)):
-                    self.atmforce.setParticleTransformation(lig1_var_atoms[i], ParticleOffsetDisplacement(lig2_attach_atom, lig1_attach_atom))
-            if lig2_var_atoms:
-                for i in range(len(lig2_var_atoms)):
-                    self.atmforce.setParticleTransformation(lig2_var_atoms[i], ParticleOffsetDisplacement(lig1_attach_atom, lig2_attach_atom))
+            for i in range(len(lig2_common_atoms)):
+                self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
+            for vl, a2, a1 in zip(lig1_var_groups, lig2_attach_atoms, lig1_attach_atoms):
+                for atom_idx in vl:
+                    self.atmforce.setParticleTransformation(atom_idx, ParticleOffsetDisplacement(a2, a1))
+            for vl, a1, a2 in zip(lig2_var_groups, lig1_attach_atoms, lig2_attach_atoms):
+                for atom_idx in vl:
+                    self.atmforce.setParticleTransformation(atom_idx, ParticleOffsetDisplacement(a1, a2))
             if self.keywords.get('VAR_ATOMS_MASS_SCALE') is not None:
                 mass_scale = float(self.keywords.get('VAR_ATOMS_MASS_SCALE'))
                 self.logger.info(f"Scaling masses of variable and attachment atoms by a factor of {mass_scale}.")
-                scaled_atoms = set()
-                for atom_list in [lig1_var_atoms, lig2_var_atoms, [lig1_attach_atom], [lig2_attach_atom]]:
-                    if atom_list:
-                        if is_list_of_lists(atom_list):
-                            for sublist in atom_list:
-                                scaled_atoms.update(sublist)
-                        else:
-                            scaled_atoms.update(atom_list)
+                scaled_atoms = set(all_var_atoms_1) | set(all_var_atoms_2) | set(lig1_attach_atoms) | set(lig2_attach_atoms)
                 for atom_idx in sorted(scaled_atoms):
                     orig_mass = self.system.getParticleMass(atom_idx)
                     self.system.setParticleMass(atom_idx, orig_mass * mass_scale)
-        elif self.keywords.get('ALIGN_LIGAND1_REF_ATOMS') is not None:
+        elif self.keywords.get('ALIGN_LIGAND1_REF_ATOMS') is not None or self.keywords.get('ALIGN_LIGAND2_REF_ATOMS') is not None:
             #frame-based variable displacements
             refatoms1_cntl = self.keywords.get('ALIGN_LIGAND1_REF_ATOMS')
             refatoms2_cntl = self.keywords.get('ALIGN_LIGAND2_REF_ATOMS')
 
             if refatoms1_cntl is None or refatoms2_cntl is None:
-                self._exit("Frame-based variable displacements requires ALIGN_LIGAND1_REF_ATOMS settings")
+                self._exit("Frame-based variable displacements requires ALIGN_LIGAND1_REF_ATOMS and ALIGN_LIGAND2_REF_ATOMS settings")
 
-            self.logger.info("Using frame-based displacements.")
+            ref1_groups = _normalize_atom_lists(refatoms1_cntl, 'ALIGN_LIGAND1_REF_ATOMS')
+            ref2_groups = _normalize_atom_lists(refatoms2_cntl, 'ALIGN_LIGAND2_REF_ATOMS')
+            assert len(ref1_groups) == num_var_regions, (
+                f"ALIGN_LIGAND1_REF_ATOMS has {len(ref1_groups)} list(s), expected {num_var_regions} to match LIGAND1_VAR_ATOMS"
+            )
+            assert len(ref2_groups) == num_var_regions, (
+                f"ALIGN_LIGAND2_REF_ATOMS has {len(ref2_groups)} list(s), expected {num_var_regions} to match LIGAND2_VAR_ATOMS"
+            )
+            for rl in ref1_groups:
+                assert len(rl) == 3, f"Each ALIGN_LIGAND1_REF_ATOMS list must contain 3 atoms, got {rl}"
+            for rl in ref2_groups:
+                assert len(rl) == 3, f"Each ALIGN_LIGAND2_REF_ATOMS list must contain 3 atoms, got {rl}"
+
+            self.logger.info(f"Using frame-based displacements ({num_var_regions} variable region(s)).")
             self.refatoms1 = refatoms1_cntl
             self.refatoms2 = refatoms2_cntl
-            if multi_var_regions:
-                lig1_ref_atoms  = [ [rl[i]+self.lig1_atoms[0] for i in range(3)] for rl in  self.refatoms1]
-                lig2_ref_atoms  = [ [rl[i]+self.lig2_atoms[0] for i in range(3)] for rl in  self.refatoms2]
-            else:
-                lig1_ref_atoms  = [ self.refatoms1[i]+self.lig1_atoms[0] for i in range(3)]
-                lig2_ref_atoms  = [ self.refatoms2[i]+self.lig2_atoms[0] for i in range(3)]
+            lig1_ref_atoms = [[rl[i] + self.lig1_atoms[0] for i in range(3)] for rl in ref1_groups]
+            lig2_ref_atoms = [[rl[i] + self.lig2_atoms[0] for i in range(3)] for rl in ref2_groups]
             for i in range(len(lig1_common_atoms)):
                 self.atmforce.setParticleTransformation(lig1_common_atoms[i], ParticleOffsetDisplacement(lig2_common_atoms[i], lig1_common_atoms[i]))
-            if lig2_common_atoms:
-                for i in range(len(lig2_common_atoms)):
-                    self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
-            if lig1_var_atoms:
-                if multi_var_regions:
-                    for vl, rl2, rl1 in zip(lig1_var_atoms,lig2_ref_atoms,lig1_ref_atoms):
-                        for i in range(len(vl)):
-                            print("LIG1:", vl[i], rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2])
-                            self.atmforce.setParticleTransformation(vl[i], ParticleFrameDisplacement(rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2])) 
-                else:
-                    for i in range(len(lig1_var_atoms)):
-                        self.atmforce.setParticleTransformation(lig1_var_atoms[i], ParticleFrameDisplacement(lig2_ref_atoms[0], lig2_ref_atoms[1], lig2_ref_atoms[2], lig1_ref_atoms[0], lig1_ref_atoms[1], lig1_ref_atoms[2]))        
-            if lig2_var_atoms:
-                if multi_var_regions:
-                    for vl, rl1, rl2 in zip(lig2_var_atoms,lig1_ref_atoms,lig2_ref_atoms):
-                        for i in range(len(vl)):
-                            print("LIG2:", vl[i], rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2])
-                            self.atmforce.setParticleTransformation(vl[i], ParticleFrameDisplacement(rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2])) 
-                else:                
-                    for i in range(len(lig2_var_atoms)):
-                        self.atmforce.setParticleTransformation(lig2_var_atoms[i], ParticleFrameDisplacement(lig1_ref_atoms[0], lig1_ref_atoms[1], lig1_ref_atoms[2], lig2_ref_atoms[0], lig2_ref_atoms[1], lig2_ref_atoms[2]))
+            for i in range(len(lig2_common_atoms)):
+                self.atmforce.setParticleTransformation(lig2_common_atoms[i], ParticleOffsetDisplacement(lig1_common_atoms[i], lig2_common_atoms[i]))
+            for vl, rl2, rl1 in zip(lig1_var_groups, lig2_ref_atoms, lig1_ref_atoms):
+                for atom_idx in vl:
+                    print("LIG1:", atom_idx, rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2])
+                    self.atmforce.setParticleTransformation(
+                        atom_idx,
+                        ParticleFrameDisplacement(rl2[0], rl2[1], rl2[2], rl1[0], rl1[1], rl1[2]),
+                    )
+            for vl, rl1, rl2 in zip(lig2_var_groups, lig1_ref_atoms, lig2_ref_atoms):
+                for atom_idx in vl:
+                    print("LIG2:", atom_idx, rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2])
+                    self.atmforce.setParticleTransformation(
+                        atom_idx,
+                        ParticleFrameDisplacement(rl1[0], rl1[1], rl1[2], rl2[0], rl2[1], rl2[2]),
+                    )
             if self.keywords.get('VAR_ATOMS_MASS_SCALE') is not None:
                 mass_scale = float(self.keywords.get('VAR_ATOMS_MASS_SCALE'))
                 self.logger.info(f"Scaling masses of variable and reference atoms by a factor of {mass_scale}.")
-                scaled_atoms = set()
-                for atom_list in [lig1_var_atoms, lig2_var_atoms, lig1_ref_atoms, lig2_ref_atoms]:
-                    if atom_list:
-                        if is_list_of_lists(atom_list):
-                            for sublist in atom_list:
-                                scaled_atoms.update(sublist)
-                        else:
-                            scaled_atoms.update(atom_list)
+                scaled_atoms = set(all_var_atoms_1) | set(all_var_atoms_2)
+                for rl in lig1_ref_atoms:
+                    scaled_atoms.update(rl)
+                for rl in lig2_ref_atoms:
+                    scaled_atoms.update(rl)
                 for atom_idx in sorted(scaled_atoms):
                     orig_mass = self.system.getParticleMass(atom_idx)
                     self.system.setParticleMass(atom_idx, orig_mass * mass_scale)
@@ -1080,7 +1087,7 @@ class OMMSystemRBFE(OMMSystem):
 
         #common and variable regions protocol
         self.var_regions = False
-        if self.keywords.get('LIGAND1_VAR_ATOMS') is not None:
+        if self.keywords.get('LIGAND1_VAR_ATOMS') is not None or self.keywords.get('LIGAND2_VAR_ATOMS') is not None:
             self.var_regions = True
 
         #adds Forces of the given group to ATMForce

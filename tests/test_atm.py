@@ -342,3 +342,80 @@ def _test_xtc_writing_every_n_cycles(tmp_path):
         assert box_read.shape == (3, 3, 1)
         assert len(time) == 1
         assert len(step) == 1
+
+
+def _test_multi_var_atoms_atmforce(tmp_path):
+    import copy
+    import logging
+    import numpy as np
+    import openmm as mm
+    from atom_openmm.ommsystem import OMMSystemRBFE
+
+    def _assert_fails(fn):
+        try:
+            fn()
+        except AssertionError:
+            return
+        raise AssertionError("Expected AssertionError for inconsistent atom lists")
+
+    ats_dir = os.path.join(curr_dir, "QB_A08_A07_equil_sync_ats")
+    with open(os.path.join(ats_dir, "QB_A08_A07.yaml"), "r") as f:
+        base_kw = yaml.safe_load(f)
+    pdbfile = os.path.join(ats_dir, "QB_A08_A07.pdb")
+    sysfile = os.path.join(ats_dir, "QB_A08_A07_sys.xml")
+    logger = logging.getLogger("test_multi_var")
+
+    # 1. Particle-based displacements with 3 variable regions
+    kw_p3 = copy.deepcopy(base_kw)
+    kw_p3["LIGAND1_VAR_ATOMS"] = [[4671, 4673], [4682, 4683], [4684, 4685, 4686]]
+    kw_p3["LIGAND2_VAR_ATOMS"] = [[4715, 4716, 4717], [4718, 4719, 4720], [4721, 4722, 4723, 4724, 4725, 4726, 4727, 4728]]
+    kw_p3["LIGAND1_ATTACH_ATOM"] = [4669, 4668, 4667]
+    kw_p3["LIGAND2_ATTACH_ATOM"] = [4704, 4703, 4702]
+    kw_p3.pop("LIGAND1_COMMON_ATOMS", None)
+    kw_p3.pop("LIGAND2_COMMON_ATOMS", None)
+    syst_p3 = OMMSystemRBFE("QB_A08_A07", kw_p3, pdbfile, sysfile, logger)
+    syst_p3.create_system()
+
+    # Inconsistent number of variable atom lists must fail
+    kw_bad = copy.deepcopy(kw_p3)
+    kw_bad["LIGAND2_VAR_ATOMS"] = [[4715, 4716], [4718, 4719]]
+    _assert_fails(lambda: OMMSystemRBFE("QB_A08_A07", kw_bad, pdbfile, sysfile, logger).create_system())
+
+    # 2. Frame-based displacements with 1, 2, 3, 4 lists and empty sublist
+    if hasattr(mm, "ParticleFrameDisplacement"):
+        base_frame = copy.deepcopy(base_kw)
+        base_frame.pop("LIGAND1_ATTACH_ATOM", None)
+        base_frame.pop("LIGAND2_ATTACH_ATOM", None)
+        base_frame.pop("LIGAND1_COMMON_ATOMS", None)
+        base_frame.pop("LIGAND2_COMMON_ATOMS", None)
+        base_frame["VAR_ATOMS_MASS_SCALE"] = 2.0
+
+        # 3 variable regions
+        kw_f3 = copy.deepcopy(base_frame)
+        kw_f3["LIGAND1_VAR_ATOMS"] = [[4671, 4673], [4682, 4683], [4684, 4685, 4686]]
+        kw_f3["LIGAND2_VAR_ATOMS"] = [[4715, 4716, 4717], [4718, 4719], [4720, 4721, 4722, 4723, 4724, 4725, 4726, 4727, 4728]]
+        kw_f3["ALIGN_LIGAND1_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18], [10, 9, 11]]
+        kw_f3["ALIGN_LIGAND2_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18], [10, 9, 11]]
+        syst_f3 = OMMSystemRBFE("QB_A08_A07", kw_f3, pdbfile, sysfile, logger)
+        syst_f3.create_system()
+        ctx = mm.Context(syst_f3.system, syst_f3.integrator, mm.Platform.getPlatformByName("Reference"))
+        ctx.setPositions(syst_f3.positions)
+        u1, u0, ebias = syst_f3.atmforce.getPerturbationEnergy(ctx)
+        assert np.isfinite(u1.value_in_unit(mm.unit.kilojoule_per_mole))
+        assert np.isfinite(u0.value_in_unit(mm.unit.kilojoule_per_mole))
+        del ctx
+
+        # 4 variable regions including an empty sublist
+        kw_f4 = copy.deepcopy(base_frame)
+        kw_f4["LIGAND1_VAR_ATOMS"] = [[], [4671, 4673], [4682, 4683], [4684, 4685, 4686]]
+        kw_f4["LIGAND2_VAR_ATOMS"] = [[4715], [4716, 4717], [4718, 4719], [4720, 4721, 4722, 4723, 4724, 4725, 4726, 4727, 4728]]
+        kw_f4["ALIGN_LIGAND1_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18], [10, 9, 11], [5, 4, 6]]
+        kw_f4["ALIGN_LIGAND2_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18], [10, 9, 11], [5, 4, 6]]
+        syst_f4 = OMMSystemRBFE("QB_A08_A07", kw_f4, pdbfile, sysfile, logger)
+        syst_f4.create_system()
+
+        # Inconsistent REF_ATOMS count (2 vs 3) must fail
+        kw_bad_ref = copy.deepcopy(kw_f3)
+        kw_bad_ref["ALIGN_LIGAND1_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18]]
+        kw_bad_ref["ALIGN_LIGAND2_REF_ATOMS"] = [[14, 11, 15], [17, 14, 18]]
+        _assert_fails(lambda: OMMSystemRBFE("QB_A08_A07", kw_bad_ref, pdbfile, sysfile, logger).create_system())
